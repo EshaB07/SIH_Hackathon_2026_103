@@ -4,6 +4,9 @@ A predictive and prescriptive layer on top of the PAIMANA portal that forecasts 
 
 Built for Smart India Hackathon – Problem Statement 103 (SIH26103), issued by the Infrastructure & Project Monitoring Division (IPMD) and the Ministry of Statistics and Programme Implementation (MoSPI).
 
+## Live Demo
+Click here to view the website: [Live Website Link](https://rtwvlk41-8000.inc1.devtunnels.ms/)
+
 ## 1. Project Overview
 
 The PAIMANA portal currently works as a descriptive monitoring system for Central Sector Infrastructure Projects. It records cost, timeline, and progress data but does not predict future outcomes.
@@ -197,7 +200,6 @@ The final CSV, `paimana_project_risk_scores_monthly.csv`, has one row per `Proje
 ## 17. Repository Structure
 
 ```
-.
 ├── data/           # Raw and cleaned input data
 ├── src/            # Cleaning, feature engineering, modeling scripts
 ├── outputs/        # Risk score CSV, SHAP driver CSVs and charts
