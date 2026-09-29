@@ -1,161 +1,212 @@
-# PAIMANA Early-Warning Risk System
+# PAIMANA Predictive Risk Monitoring System
 
-**Smart India Hackathon 2026 — Problem Statement SIH26103**
-Use case on a web-based integrated project-monitoring platform
-Theme: Smart Automation | Category: Software | Team: Tantastic
+A predictive and prescriptive layer on top of the PAIMANA portal that forecasts cost overruns and schedule delays three months in advance, produces an interpretable risk score for every project, and shows the specific factors driving each prediction.
 
-## Overview
+Built for Smart India Hackathon – Problem Statement 103 (SIH26103), issued by the Infrastructure & Project Monitoring Division (IPMD) and the Ministry of Statistics and Programme Implementation (MoSPI).
 
-Infrastructure projects monitored under MoSPI's PAIMANA portal are currently tracked on a *reactive* basis — cost and schedule overruns are reported only after they have already occurred. This project introduces a predictive early-warning layer on top of the existing PAIMANA data: rather than reporting current status, it looks at a project's recent history and forecasts whether it is likely to deteriorate — through growing cost overrun or growing delay — over the following three months, while there is still time to intervene.
+## 1. Project Overview
 
-The system outputs a monthly-updating, explainable risk score per project, feeding directly into a decision-support dashboard for policymakers, project administrators, implementing agencies, and monitoring officials.
+The PAIMANA portal currently works as a descriptive monitoring system for Central Sector Infrastructure Projects. It records cost, timeline, and progress data but does not predict future outcomes.
 
-## Problem Statement
+This project adds a predictive and prescriptive layer on top of that data. It:
 
-- **Problem Statement ID:** SIH26103
-- **Title:** Use case on web-based integrated project-monitoring platform
-- **Theme:** Smart Automation
-- **Category:** Software
+- Forecasts cost overruns and schedule delays three months in advance
+- Generates an interpretable risk score per project
+- Surfaces the specific factors driving each prediction
 
-## Key Features
+## 2. Problem Statement Recap
 
-- **Two parallel predictive models** — one for cost escalation, one for schedule/time escalation — trained separately because the two behave very differently (cost overruns are rare and volatile; delays are common and more predictable).
-- **Three-month-ahead prediction window**, built from a rolling four-month history of each project.
-- **26-variable feature array**, engineered entirely from fields PAIMANA already collects, with an external-variable roadmap for future enrichment (no new mandatory data collection required for the prototype).
-- **Explainable output** — every risk score ships with its top drivers via SHAP, so a reviewer sees not just that a project is flagged, but why.
-- **Monthly re-scoring pipeline** producing a 0–100 risk score and a Low / Medium / High band per project.
-- **Leakage-safe validation** methodology, split by project rather than by row.
-- **Fully open-source technology stack.**
+The problem statement explicitly asks for:
 
-## Feature Groups
+- (a) Predictive models that forecast cost/time overruns using open-source tools
+- (b) An assessment of whether ML provides meaningful gains over conventional statistical methods
+- (c) Models built on existing Common Upload Form (CUF) fields, with an evaluation of how much predictive power comes from CUF fields versus additional variables
 
-The 26-variable feature array is organized into four thematic groups derived from PAIMANA's Common Update Format (CUF) fields:
+This system addresses all three requirements, as detailed in the sections below.
 
-| Group | Features | What It Captures |
+## 3. Data Source
+
+- Website: https://paimana-proj.mospi.gov.in
+- Coverage: All 28 states and 8 union territories
+- Collection: Data was obtained directly through the public dashboard of the PAIMANA website
+
+## 4. Data Cleaning and Preprocessing
+
+The cleaning script applies the following rules:
+
+- **Cost overrun fallback:** Falls back to the original cost if the revised cost is zero or missing/blank (`NaN`), so blank fields do not break the calculation.
+- **Missing text preservation:** Genuine missing values in text columns are kept as `NaN` rather than converted into the literal string `"nan"`.
+- **Flexible date parsing:** If a date fails the strict `DD/MM/YYYY` format, a flexible parser is used instead of silently producing a missing value (`NaT`).
+- **Accurate project status labeling:** Missing progress values are labeled `Unknown`, separate from projects explicitly at 0% (`Not Started`) or `In Progress`.
+- **Preservation of delay metrics:** Missing delay metrics stay `NaN` instead of collapsing to 0, and projects completed ahead of schedule keep their actual negative delay values.
+- **Agency name normalisation:** Implementing agency names are standardised by removing trailing bracket abbreviations, punctuation, dashes, and roman numerals, and construction-office codes are mapped to their corresponding zonal railway names.
+
+### Expected input structure
+
+The modeling pipeline expects a CSV with one row per project per reporting month, with columns including:
+
+`Sector Name`, `Line Ministry`, `Implementing Agency`, `Project Code`, `Project Name`, `Original Cost`, `Revised Cost`, `Expenditure`, `Physical Progress`, `Original/Revised Date of Commissioning`, `Sanction Date`, `Cost Overrun`, `Delay`
+
+### Data-quality issues handled
+
+- **Day-first dates:** Source dates are in `DD-MM-YYYY` format, which pandas' default parser misreads by silently swapping day and month. All date columns are parsed with an explicit `format="%d-%m-%Y"`.
+- **"No revision filed yet":** A `Revised Cost` of exactly 0 and a blank `Revised Date of Commissioning` both mean no revision has been filed. They are treated as equal to the original cost/date, not as nulls or zeros.
+
+## 5. Project Identity and Multi-State Handling
+
+- `Project_UID` uniquely identifies a project by combining State and Project Code (e.g. `Maharashtra_617212`).
+- `Project_Group` is the bare Project Code. Some projects, particularly Railways and other national infrastructure, span multiple states and are logged once per state with identical underlying data. `Project_Group` recognises these as the same project.
+- `State_Group` marks any project appearing in more than one state as `"Multi-state"`, which is used as a categorical feature.
+
+This distinction is used in two places:
+
+| Stage | Behaviour |
+|---|---|
+| Training | Rows are deduplicated by `Project_Group`, so a multi-state project is not counted multiple times and does not inflate validation accuracy. |
+| Final output | Every state's listing is kept and scored, since a project's presence in multiple states is worth surfacing per state in the dashboard. |
+
+## 6. Feature Engineering
+
+Beyond the raw CUF fields, 18 additional variables are engineered from the data already present. No external data sources are used at this stage.
+
+| Category | What it captures | Features |
 |---|---|---|
-| Momentum | `progress_velocity`, `expenditure_velocity`, `stagnant_flag` | Progress and spending per month, and whether the project has stalled |
-| History of Slipping | `delay_change`, `cost_overrun_change`, `n_date_revisions`, `n_cost_revisions` | Whether delay or overrun has been growing recently, and how often dates or costs were already revised |
-| Deadline Pressure | `months_to_commission`, `months_since_sanction`, `pct_time_elapsed`, `required_velocity`, `velocity_gap` | Months remaining, share of time used, the pace needed to finish on schedule, and how far the current pace falls short |
-| Money vs. Work | `expenditure_ratio`, `spending_progress_gap` | Share of budget already spent, and whether spending is outpacing physical progress |
+| Momentum | How fast a project is currently moving | `progress_velocity`, `expenditure_velocity`, `stagnant_flag` |
+| History of Slipping | Whether the situation is worsening and how often it has been revised | `delay_change`, `cost_overrun_change`, `n_date_revisions`, `n_cost_revisions` |
+| Deadline Pressure | How much runway remains and whether the project is on pace | `months_to_commission`, `months_since_sanction`, `pct_time_elapsed`, `required_velocity`, `velocity_gap` |
+| Money vs. Work | Whether spending is outpacing actual construction | `expenditure_ratio`, `spend_progress_gap` |
 
-## Technical Approach
+### Feature definitions
 
-### 1. Data Ingestion and Processing
-- Monthly data sources: PAIMANA/OCMS historical updates, project metadata, project financials, and timelines.
-- Data preparation in Python and Pandas: missing-value handling, data and business-rule validation, and construction of monthly project histories.
+- `progress_velocity`: average physical progress gained per month
+- `expenditure_velocity`: average spend per month
+- `stagnant_flag`: binary flag for zero progress across the observed window
+- `delay_change` / `cost_overrun_change`: how much delay or overrun shifted across the observed window
+- `n_date_revisions` / `n_cost_revisions`: number of times the commissioning date or cost was revised
+- `pct_time_elapsed`: share of total project duration already used
+- `required_velocity`: pace of progress needed to finish on schedule
+- `velocity_gap`: required pace minus actual pace, the most direct "on track or not" signal
+- `expenditure_ratio`: share of budget spent
+- `spend_progress_gap`: mismatch between financial and physical progress, a strong indicator of potential mismanagement
 
-### 2. Feature Engineering
-- Snapshot creation across monthly project lifecycles.
-- Engineered feature groups as described above.
-- Final feature array: 26 variables, including the original CUF fields.
+**Missing-data flags:** `Sanction_Date_Missing` and `Revised_Date_Missing` mark rows where a date could not be determined even after cross-month recovery. This lets the model treat missingness as its own signal instead of silently imputing a value.
 
-### 3. Advanced Modeling
-- Parallel XGBoost models — one for time overrun, one for cost overrun — each re-scored monthly.
-- Planned external-variable roadmap: cement and steel WPI (added), equipment WPI (power, telecom, and mining only), state wage indices, a monsoon-exposure calendar, GDP and construction growth, and retrospective COVID/disaster controls.
+Together with the raw CUF fields, this gives a final feature array of 26 variables feeding both models.
 
-### 4. Validation, Explainability, and Outputs
-- Temporal holdout validation, plus repeated cross-validation split by project to prevent leakage.
-- SHAP-based explainability layer for every prediction.
-- Final risk classification supporting: identification of high-risk projects, resource prioritization, anticipation of cost and schedule jumps, validation of interventions via SHAP drivers, and KPI tracking.
+## 7. Modeling Approach
 
-### Technology Stack
+Two independent XGBoost classifiers are trained:
 
-- **Data processing:** pandas
-- **Modeling:** XGBoost, scikit-learn
-- **Explainability:** SHAP
-- **Storage:** PostgreSQL
-- **Frontend:** React
+- `cost_escalated`: will the project's cost overrun worsen over the next three months?
+- `time_escalated`: will the project's schedule delay worsen over the next three months?
 
-## Model Details
+XGBoost was chosen over simpler alternatives because gradient-boosted trees can capture conditional interactions (for example, "a high spend-progress mismatch matters more in some sectors than others") that a linear model cannot represent.
 
-### Approach
-The system predicts, for each project, whether cost overrun or schedule delay will meaningfully worsen over the next three months, based on the preceding four months of monitoring data. Two independent XGBoost models are used — one per target — because cost and time overruns follow substantially different distributions in the underlying data.
+### Experiment grid
 
-### Benchmarking
-XGBoost was benchmarked against a plain logistic regression baseline on the same CUF fields. Adding the derived features and moving to XGBoost lifted time-overrun prediction accuracy from approximately 80% to approximately 85%, confirming that the added model complexity yields a real improvement rather than being complexity for its own sake.
+- Two feature sets per target: numeric features only, versus numeric plus categorical (`Sector`, `Implementing Agency`, `State_Group`)
+- Three model configurations varying tree depth, learning rate, and regularization strength
 
-### Validation Methodology
-Validation used 5-fold cross-validation repeated three times, with folds split at the project level (not the row level), so that no model is ever evaluated on a project it was partially trained on. A temporal holdout was additionally used to check performance under realistic, forward-looking deployment conditions.
+**Baseline:** A plain logistic regression using only one or two of the most obvious raw fields is trained alongside, directly answering the PS requirement to assess whether ML gives a meaningful gain over conventional statistics.
 
-### Results
+**Validation:** Group-aware, repeated stratified k-fold cross-validation (`StratifiedGroupKFold`), grouped by `Project_Group` instead of individual row. No project's data leaks between training and validation folds. A naive random split could let the model see a project in training and be tested on that same project's later months, artificially inflating accuracy.
 
-| Model | Metric | Result |
-|---|---|---|
-| Time-delay model | ROC-AUC | 0.925 |
-| Time-delay model | PR-AUC | 0.88 |
-| Cost-overrun model | Lift over random | ~5–7x |
+## 8. Labels and the Rolling Prediction Window
 
-The time-delay model performs strongly and is reliable enough to prioritize which projects warrant review. The cost-overrun model shows real but modest signal — useful as a supplementary flag rather than a standalone verdict — constrained primarily by the small number of historical cost-overrun examples in the available data (13 months of history across 5 states at prototype stage).
+A project's label is not based on its final completion. It is based on a rolling comparison:
 
-### Explainability
-Every risk score is accompanied by its top drivers, computed via SHAP, so that a reviewer sees an actionable reason for each flag — for example, that spending is outpacing physical progress — rather than an opaque numeric score.
+- For each anchor month, features are built from the preceding `LOOKBACK` months (4).
+- The label compares the project's cost overrun / delay at the anchor month against its state `HORIZON` months later (3).
+- If the overrun or delay worsened beyond a small margin (1.0 percentage point for cost, 0.5 months for delay), the project is labeled as escalated.
 
-### Output
-A monthly-updating risk score per project, comprising:
-- Cost risk score
-- Time risk score
-- Combined risk band: Low / Medium / High
+This tests the system's practical purpose, whether it could have flagged a problem before it materialised, using only data available at the time.
 
-These feed directly into a dashboard for downstream decision-making.
+**Scoring eligibility:** A project is scored for a given month only if it has at least one snapshot within the four-month lookback window and its most recent snapshot is no more than one month behind the scoring month (`MAX_STALE`). Otherwise the model declines to score it rather than guess from stale data.
 
-## Data Quality Notes
+## 9. Explainability
 
-Leakage-safe validation surfaced 62 duplicate national-project listings, which were cleaned from an initial 917 projects down to 855. Cleaning mules, duplicate grouping, and anomaly flags are part of the ongoing data-quality mitigation strategy; removal of certain entry anomalies was found to shift results by less than one point.
+Every prediction is paired with SHAP values computed via `TreeExplainer`. Two forms of explanation are produced:
 
-## Feasibility and Viability
+- **Global driver ranking:** mean absolute SHAP value across the full training portfolio, saved per model as a CSV and a chart.
+- **Per-project, per-month top-2 drivers:** attached directly to each row of the final output.
 
-| Dimension | Prototype (Built) | Full Project (Additional Variables + Deployment) |
-|---|---|---|
-| Technical Feasibility | Open-source stack (XGBoost, scikit-learn, SHAP); runs in about a minute on a laptop | Extra data from free public sources (WPI, state wage notifications, IMD, NSO); merged by month, state, and sector via standard pandas joins |
-| Data Feasibility | Uses only fields MoSPI already collects; 14 derived variables need no new collection | Layer 3 needs a monthly fetch job; proposed additional CUF fields (contract type, land acquisition, clearances) would add small reporting effort |
-| Economic Feasibility | Zero licensing cost | Same — all sources are free and public |
-| Operational Feasibility | Outputs a score, a band, and drivers readable by non-technical officers | Monthly re-scoring and retraining runs automatically as new snapshots arrive |
-| Scalability | Adding states or months needs no redesign | Built to run on the full portfolio (1,981 projects, 22 sectors) and the OCMS history |
+No risk score is presented as an unexplained number. Every flag comes with the features that produced it.
 
-### Risks and Mitigations
+## 10. Risk Scoring
 
-| Risk | Evidence | Mitigation Strategy |
-|---|---|---|
-| Short data history | 13 months, 5 states | Retrain monthly; validate against the two-decade OCMS history |
-| Data quality | 62 duplicate national-project listings (917 → 855); 46 projects with entry anomalies | Cleaning mules, duplicate grouping, anomaly flags |
-| Low cost-model precision | Cost predictions have low precision | Treat output as a relative ranking; supplement with cost-cause data |
-| National indices don't vary by project | One index value per month | Use sector-conditional indices plus state-level wages and monsoon data |
-| Leakage from publication lag | Prices are published after the fact | Use only lagged values available at prediction time |
-| Limited validation range for additional variables | At most 13 distinct values per national series | Run ablation studies against the multi-year OCMS history |
-| Marginal-value additional variables | Small number of events | Retain a variable only if it improves out-of-fold results |
-| Deployment integration, security, and drift | Government data, changing patterns | Expose scores through an API layer on PAIMANA's existing role-based access; support open-source, on-premise hosting; monitor drift and retrain |
-| Over-reliance on the score | Users may over-trust the output | Present drivers and confidence alongside the score; keep humans in the loop |
+- Each model outputs a probability between 0 and 1, rescaled to 0–100 for display.
+- A percentile rank within the scoring month (`cost_risk_pct`, `time_risk_pct`) is computed so risk is assessed relative to that month's cohort rather than on an absolute, possibly skewed scale.
+- A combined risk score blends the two: 70% time-risk, 30% cost-risk. The time model is weighted higher because it is better validated (a much larger positive class and stronger PR-AUC than the cost model, given how rare true cost escalation events are in the available data).
+- The combined score is banded into Low / Medium / High risk.
 
-## Impact and Benefits
+## 11. Handling Missing Scores
 
-### Governance Benefits
-Shifts project monitoring from reactive to proactive, enabling policymakers to prioritize interventions before cost or time overruns materialize.
+No project is silently dropped. Every `Project_UID`, for every month it appears in, is retained in the final CSV. Where a real score could not be computed, the `no_score_reason` column explains why:
 
-### Economic Benefits
-Early intervention on flagged high-risk projects can reduce the scale of cost overruns across a portfolio that PAIMANA's own published figures place at over ₹37 lakh crore.
+- The project lacked four months of prior history
+- Its most recent report is too stale relative to the scoring month
+- It falls within the first three months of the entire dataset, before any project could have accumulated enough history
 
-### Transparency Benefits
-SHAP-based driver analysis gives administrators an auditable, explainable reason for every risk flag, rather than an opaque score.
+## 12. Backtesting
 
-### Technological Benefits
-A validated, open-source machine learning pipeline that is replicable across any government project-monitoring dataset, not specific to PAIMANA.
+The dataset spans enough months for some earlier predictions' three-month horizons to have already passed, so the system includes a backtest. For every project/month where the actual outcome three months later is available, the earlier prediction is compared against what actually happened.
 
-### Target Audience
+Each project receives a plain verdict:
 
-- **Policymakers / MoSPI leaders** — portfolio-wide risk visibility and prioritization support
-- **Project administrators** — early flags with explainable drivers, before overruns are locked in
-- **Implementing agencies** — objective, data-driven performance benchmarking against peers
-- **Monitoring officials** — reduced manual review burden via automated risk triage
+- Correctly flagged
+- Correctly stable
+- False alarm
+- Missed escalation
 
-## Research and References
+Real cost overrun and delay figures recorded at the later point are included alongside. Where three months have not yet elapsed, or the project stopped reporting during that window, a `backtest_reason` explains why no verdict is available.
 
-### Dataset References
-- PAIMANA Project Portal — https://paimana-proj.mospi.gov.in
-- Press Information Bureau, Government of India — https://www.pib.gov.in
+## 13. Output Schema
 
-### Core Predictive Engine
-- Chen, T., & Guestrin, C. (2016). *XGBoost: A Scalable Tree Boosting System.* KDD.
-- Lundberg, S. M., & Lee, S.-I. (2017). *A Unified Approach to Interpreting Model Predictions.* NeurIPS.
-- Pedregosa, F., et al. (2011). *Scikit-learn: Machine Learning in Python.*
-- Flyvbjerg, B. (2003). *Megaprojects and Risk.*
-- Roadmap data sources: Wholesale Price Index (DPIIT), Labour Bureau, India Meteorological Department (IMD)
+The final CSV, `paimana_project_risk_scores_monthly.csv`, has one row per `Project_UID` per scored month, matching the row count of the source dataset exactly.
+
+| Group | Columns |
+|---|---|
+| Identity and descriptive | `Project_UID`, `Project_Group`, `State`, `Project Name`, `Sector` |
+| Risk outputs (0–100 scale) | `cost_risk`, `time_risk`, `cost_risk_pct`, `time_risk_pct`, `combined_risk`, `risk_band` |
+| Explainability | `cost_driver_1/2_name` and `_impact`, `time_driver_1/2_name` and `_impact` (impacts are raw SHAP contributions, not percentages, and are unscaled) |
+| Status | `no_score_reason`, `used_in_training` |
+| Backtest | now/actual cost overrun and delay, predicted flags, verdicts, error percentages, `backtest_reason` |
+
+## 14. Dashboard / UI
+
+- **Framework:** [React]
+- **Page structure:** [Home, AI Risk Intelligence, Dashboard]
+- **Data source:** All risk scores, driver names, and portfolio statistics are read directly from `paimana_project_risk_scores_monthly.csv`. No placeholder or randomly generated values appear in the interface.
+
+### Key UI principles
+
+- Any project without a real score shows its `no_score_reason` in plain language, never a blank or a fabricated zero.
+- Predicted-risk figures and actual-recorded-overrun figures are always labeled distinctly and are never implied to be directly comparable magnitudes.
+- Each project detail view has a "Predicted vs. Actual" section showing the backtest verdict once resolved, or a clear "not yet resolved" state otherwise.
+
+## 15. Known Limitations
+
+- The cost escalation model has a lower PR-AUC than the time model, because true cost escalation events are rare in the available window compared to time delays.
+- Output should be read as a relative risk ranking, not a precise probability, at small sample sizes.
+- The dataset's history currently spans a limited number of months and states. Broader historical coverage and the planned Layer 3 external variables (commodity price indices, wage indices, monsoon exposure, financing rates) are expected to improve both accuracy and the CUF-vs-external-variable comparison the PS requests.
+
+## 16. Installation and Setup
+
+**Requirements:** Python [3.10.x], plus `xgboost`, `scikit-learn`, `shap`, `pandas`, `numpy`, and your dashboard framework.
+
+## 17. Repository Structure
+
+```
+.
+├── data/           # Raw and cleaned input data
+├── src/            # Cleaning, feature engineering, modeling scripts
+├── outputs/        # Risk score CSV, SHAP driver CSVs and charts
+├── dashboard/      # Dashboard code
+└── README.md
+```
+
+## 18. References
+
+1. Chen, T., & Guestrin, C. (2016). XGBoost: A Scalable Tree Boosting System. KDD '16.
+2. Lundberg, S. M., & Lee, S.-I. (2017). A Unified Approach to Interpreting Model Predictions. NeurIPS 30.
+3. Pedregosa, F., et al. (2011). Scikit-learn: Machine Learning in Python. JMLR.
