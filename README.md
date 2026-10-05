@@ -5,7 +5,7 @@ A predictive and prescriptive layer on top of the PAIMANA portal that forecasts 
 Built for Smart India Hackathon – Problem Statement 103 (SIH26103), issued by the Infrastructure & Project Monitoring Division (IPMD) and the Ministry of Statistics and Programme Implementation (MoSPI).
 
 ## Live Demo
-Click here to view the website: [Live Website Link](https://rtwvlk41-8000.inc1.devtunnels.ms/)
+Click here to view the website: [Live Website Link](https://sih-eta-peach.vercel.app/)
 
 ## 1. Project Overview
 
